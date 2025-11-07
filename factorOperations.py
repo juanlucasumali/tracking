@@ -102,7 +102,41 @@ def joinFactors(factors: List[Factor]):
 
 
     "*** YOUR CODE HERE ***"
-    raiseNotDefined()
+    # conv to list if needed (dict_values/other iterable)
+    factors = list(factors)
+    
+    if len(factors) == 0:
+        raise ValueError("joinFactors requires at least one factor")
+    
+    if len(factors) == 1:
+        return factors[0]
+    
+    variableDomainsDict = factors[0].variableDomainsDict()
+    
+    # collect unconditioned vars from all factors
+    all_unconditioned = set()
+    for factor in factors:
+        all_unconditioned.update(factor.unconditionedVariables())
+    
+    # collect conditioned vars from all factors, remove all unconditioned in any factor
+    all_conditioned = set()
+    for factor in factors:
+        for var in factor.conditionedVariables():
+            if var not in all_unconditioned:
+                all_conditioned.add(var)
+    
+    # create new factor w/ combined variables
+    new_factor = Factor(list(all_unconditioned), list(all_conditioned), variableDomainsDict)
+    
+    # for each possible assignment, mult probabilities from all input factors
+    for assignment in new_factor.getAllPossibleAssignmentDicts():
+        product = 1.0
+        for factor in factors:
+            # getProbability handles assignmentDicts w/ more vars than the factor contains
+            product *= factor.getProbability(assignment)
+        new_factor.setProbability(assignment, product)
+    
+    return new_factor
     "*** END YOUR CODE HERE ***"
 
 ########### ########### ###########
