@@ -193,12 +193,40 @@ def inferenceByVariableEliminationWithCallTracking(callTrackingList=None):
         joinFactorsByVariable = joinFactorsByVariableWithCallTracking(callTrackingList)
         eliminate             = eliminateWithCallTracking(callTrackingList)
         if eliminationOrder is None: # set an arbitrary elimination order if None given
-            eliminationVariables = bayesNet.variablesSet() - set(queryVariables) -\
-                                   set(evidenceDict.keys())
+            eliminationVariables = bayesNet.variablesSet() - set(queryVariables) - set(evidenceDict.keys())
             eliminationOrder = sorted(list(eliminationVariables))
 
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        currentFactorsList = bayesNet.getAllCPTsWithEvidence(evidenceDict)
+        
+        for eliminationVariable in eliminationOrder:
+            # join all factors containing this variable
+            currentFactorsList, joinedFactor = joinFactorsByVariable(currentFactorsList, eliminationVariable)
+            
+            # if joined factor has only one unconditioned var, discard since result would be invalid
+            if len(joinedFactor.unconditionedVariables()) == 1:
+                continue
+            else:
+                # eliminate var from the joined factor
+                eliminatedFactor = eliminate(joinedFactor, eliminationVariable)
+                # add eliminated factor back to list
+                currentFactorsList.append(eliminatedFactor)
+        
+        # join any remaining factors
+        if len(currentFactorsList) > 0:
+            resultFactor = joinFactors(currentFactorsList)
+        else:
+            # if no factors, create empty factor
+            variableDomainsDict = bayesNet.variableDomainsDict()
+            resultFactor = bn.Factor(list(queryVariables), list(evidenceDict.keys()), variableDomainsDict)
+            # set all probabilities to 0
+            for assignment in resultFactor.getAllPossibleAssignmentDicts():
+                resultFactor.setProbability(assignment, 0.0)
+        
+        # normalize so probabilities sum to 1
+        queryConditionedOnEvidence = normalize(resultFactor)
+        
+        return queryConditionedOnEvidence
         "*** END YOUR CODE HERE ***"
 
 
@@ -339,7 +367,10 @@ class DiscreteDistribution(dict):
         {}
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        total = self.total()
+        if total > 0:
+            for key in self:
+                self[key] = self[key] / total
         "*** END YOUR CODE HERE ***"
 
     def sample(self):
@@ -364,7 +395,13 @@ class DiscreteDistribution(dict):
         0.0
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        total = self.total()
+        rand = random.random() * total
+        cumsum = 0.0
+        for key, value in self.items():
+            cumsum += value
+            if rand <= cumsum:
+                return key
         "*** END YOUR CODE HERE ***"
 
 
@@ -439,7 +476,17 @@ class InferenceModule:
         Return the probability P(noisyDistance | pacmanPosition, ghostPosition).
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # ghost in jail -> obs must be None
+        if ghostPosition == jailPosition:
+            return 1.0 if noisyDistance is None else 0.0
+        
+        # obs is None -> ghost must be in jail
+        if noisyDistance is None:
+            return 0.0
+        
+        # calc true dist and use obs prob
+        trueDistance = manhattanDistance(pacmanPosition, ghostPosition)
+        return busters.getObservationProbability(noisyDistance, trueDistance)
         "*** END YOUR CODE HERE ***"
 
     def setGhostPosition(self, gameState, ghostPosition, index):
@@ -553,7 +600,15 @@ class ExactInference(InferenceModule):
         position is known.
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # P(ghostPos | obs, pacmanPos) ∝ P(obs | ghostPos, pacmanPos) * P(ghostPos)
+        pacmanPosition = gameState.getPacmanPosition()
+        jailPosition = self.getJailPosition()
+        
+        # update beliefs for each pos
+        for position in self.allPositions:
+            prior = self.beliefs[position]
+            obsProb = self.getObservationProb(observation, pacmanPosition, position, jailPosition)
+            self.beliefs[position] = prior * obsProb
         "*** END YOUR CODE HERE ***"
         self.beliefs.normalize()
     
@@ -571,7 +626,22 @@ class ExactInference(InferenceModule):
         current position is known.
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # P(G_t+1) = Σ_{G_t} P(G_t+1 | G_t, gameState) * P(G_t)
+        newBeliefs = DiscreteDistribution()
+        
+        # init new beliefs to 0 for all positions
+        for pos in self.allPositions:
+            newBeliefs[pos] = 0.0
+        
+        # for each old pos, sum over transition probs
+        for oldPos in self.allPositions:
+            prior = self.beliefs[oldPos]
+            if prior > 0:
+                newPosDist = self.getPositionDistribution(gameState, oldPos)
+                for newPos in newPosDist:
+                    newBeliefs[newPos] += prior * newPosDist[newPos]
+        
+        self.beliefs = newBeliefs
         "*** END YOUR CODE HERE ***"
 
     def getBeliefDistribution(self):
@@ -603,7 +673,11 @@ class ParticleFilter(InferenceModule):
         """
         self.particles = []
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # evenly distribute particles across legal positions using mod
+        numPositions = len(self.legalPositions)
+        for i in range(self.numParticles):
+            pos = self.legalPositions[i % numPositions]
+            self.particles.append(pos)
         "*** END YOUR CODE HERE ***"
 
     def getBeliefDistribution(self):
@@ -615,7 +689,14 @@ class ParticleFilter(InferenceModule):
         This function should return a normalized distribution.
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # count particles at each position
+        beliefDist = DiscreteDistribution()
+        for particle in self.particles:
+            beliefDist[particle] += 1.0
+        
+        # normalize
+        beliefDist.normalize()
+        return beliefDist
         "*** END YOUR CODE HERE ***"
     
     ########### ########### ###########
@@ -635,7 +716,29 @@ class ParticleFilter(InferenceModule):
         the DiscreteDistribution may be useful.
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # get pacman and jail positions
+        pacmanPosition = gameState.getPacmanPosition()
+        jailPosition = self.getJailPosition()
+        
+        # create weight distribution over particles
+        # aggregate weights for particles at same position
+        weights = DiscreteDistribution()
+        for particle in self.particles:
+            obsProb = self.getObservationProb(observation, pacmanPosition, particle, jailPosition)
+            weights[particle] += obsProb
+        
+        # check if all weights are zero
+        if weights.total() == 0:
+            self.initializeUniformly(gameState)
+            return
+        
+        # resample particles from weighted distribution
+        newParticles = []
+        for _ in range(self.numParticles):
+            sampledParticle = weights.sample()
+            newParticles.append(sampledParticle)
+        
+        self.particles = newParticles
         "*** END YOUR CODE HERE ***"
     
     ########### ########### ###########
@@ -648,5 +751,12 @@ class ParticleFilter(InferenceModule):
         gameState.
         """
         "*** YOUR CODE HERE ***"
-        raiseNotDefined()
+        # sample new pos for each particle from transition dist
+        newParticles = []
+        for oldPos in self.particles:
+            newPosDist = self.getPositionDistribution(gameState, oldPos)
+            newPos = newPosDist.sample()
+            newParticles.append(newPos)
+        
+        self.particles = newParticles
         "*** END YOUR CODE HERE ***"
